@@ -106,6 +106,7 @@ std::pair<py::object, py::dict> parseIValuesToPyArgsKwargs(
   auto schemaAwareToPyObject = [&](int64_t idx) -> py::object {
     const auto& arg = schema.arguments()[idx];
     auto match = [&](c10::TypeKind kind) {
+      std::cout << "schemaAwareToPYObject\n";
       const auto& t = arg.real_type();
       if (t->kind() == kind)
         return true;
@@ -255,6 +256,9 @@ c10::IntArrayRef concrete_strides_fn(
 c10::IntArrayRef concrete_sizes_fn(
     const c10::impl::PyInterpreter*,
     const c10::TensorImpl* self);
+c10::Layout concrete_layout_fn(
+    const c10::impl::PyInterpreter*,
+    const c10::TensorImpl* self);
 
 class PyInterpreterHolder {
  public:
@@ -268,7 +272,8 @@ class PyInterpreterHolder {
             &concrete_device_fn,
             &concrete_dim_fn,
             &concrete_strides_fn,
-            &concrete_sizes_fn)) {}
+            &concrete_sizes_fn,
+            &concrete_layout_fn)) {}
   // NB: intentionally leaks the memory
   ~PyInterpreterHolder() {
     impl_->disarm();
@@ -608,9 +613,9 @@ static PyObject* THPVariable_make_subclass(
     PyObject* kwargs) {
   HANDLE_TH_ERRORS
   static PythonArgParser parser({
-      "_make_subclass(PyObject* cls, Tensor data, bool require_grad=False, *, c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False)",
+      "_make_subclass(PyObject* cls, Tensor data, bool require_grad=False, *, c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False, bool dispatch_layout=False)",
   });
-  ParsedArgs<5> parsed_args{};
+  ParsedArgs<6> parsed_args{};
   auto r = parser.parse(args, kwargs, parsed_args);
   PyObject* cls = r.pyobject(0);
   if (!PyType_Check(cls)) {
@@ -639,6 +644,9 @@ static PyObject* THPVariable_make_subclass(
   if (r.toBool(4)) {
     data.unsafeGetTensorImpl()->set_custom_device(true);
   }
+  if (r.toBool(5)) {
+    data.unsafeGetTensorImpl()->set_custom_layout(true);
+  }
   return THPVariable_NewWithVar(
       (PyTypeObject*)cls,
       std::move(data),
@@ -657,13 +665,13 @@ static PyObject* THPVariable_make_wrapper_subclass(
       "_make_wrapper_subclass(PyObject* cls, IntArrayRef size, *, IntArrayRef? strides=None, "
       "int64_t? storage_offset=None, MemoryFormat? memory_format=None, ScalarType dtype=None, "
       "Layout layout=torch.strided, Device device=None, bool pin_memory=False, bool requires_grad=False, "
-      "c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False)",
+      "c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False, bool dispatch_layout=False)",
       "_make_wrapper_subclass(PyObject* cls, SymIntArrayRef size, SymIntArrayRef strides, "
       "int64_t? storage_offset=None, MemoryFormat? memory_format=None, ScalarType dtype=None, "
       "Layout layout=torch.strided, Device device=None, bool pin_memory=False, bool requires_grad=False, "
-      "c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False)",
+      "c10::string_view? dispatch_sizes_strides_policy=None, bool dispatch_device=False, bool dispatch_layout=False)",
   });
-  ParsedArgs<12> parsed_args{};
+  ParsedArgs<13> parsed_args{};
   auto r = parser.parse(args, kwargs, parsed_args);
   PyObject* cls = r.pyobject(0);
 
@@ -754,6 +762,9 @@ static PyObject* THPVariable_make_wrapper_subclass(
 
   if (r.toBool(11)) {
     tensor.unsafeGetTensorImpl()->set_custom_device(true);
+  }
+  if (r.toBool(12)) {
+    tensor.unsafeGetTensorImpl()->set_custom_layout(true);
   }
 
   return THPVariable_NewWithVar(
@@ -1361,18 +1372,28 @@ static PyObject* THPVariable_dtype(THPVariable* self, void* unused) {
 }
 
 static PyObject* THPVariable_layout(THPVariable* self, void* unused) {
+  std::cout << "in THPVariable_Layout \n";
   HANDLE_TH_ERRORS
   if (check_has_torch_function((PyObject*)self)) {
-    return handle_torch_function_getter(self, "layout");
+    std::cout << "has torch function\n";
+    auto x = handle_torch_function_getter(self, "layout");
+    std::cout << "finishing has_torch_function\n";
+    return x;
+    // return handle_torch_function_getter(self, "layout");
   }
+  // return THPLayout_New(THPVariable_Unpack(self).layout(), "torch.strided");
+  std::cout << "THPVariable_Layout step 1\n";
   auto& self_ = THPVariable_Unpack(self);
+  std::cout << "THPVariable_Layout step 2\n";
   return torch::autograd::utils::wrap(torch::getTHPLayout(self_.layout()));
   END_HANDLE_TH_ERRORS
 }
 
 static PyObject* THPVariable_device(THPVariable* self, void* unused) {
+  std::cout << "in THPVariable_device \n";
   HANDLE_TH_ERRORS
   if (check_has_torch_function((PyObject*)self)) {
+    std::cout << "has torch function\n";
     return handle_torch_function_getter(self, "device");
   }
   return THPDevice_New(THPVariable_Unpack(self).device());
@@ -2097,15 +2118,28 @@ py::object torchDispatchFromTensorImpl(
 
   py::dict kwargs;
 
-  return py::reinterpret_steal<py::object>(
-      handle_torch_function_no_python_arg_parser(
-          overloaded_args,
-          args.ptr(),
-          kwargs.ptr(),
-          func_name,
-          torch_api_function,
-          module_name,
-          TorchFunctionName::TorchDispatch));
+  auto x = handle_torch_function_no_python_arg_parser(
+      overloaded_args,
+      args.ptr(),
+      kwargs.ptr(),
+      func_name,
+      torch_api_function,
+      module_name,
+      TorchFunctionName::TorchDispatch);
+  
+  std::cout << "x from torchDispatchFromTensorImpl" << x << "\n";
+  
+  return py::reinterpret_steal<py::object>(x);
+
+  // return py::reinterpret_steal<py::object>(
+  //     handle_torch_function_no_python_arg_parser(
+  //         overloaded_args,
+  //         args.ptr(),
+  //         kwargs.ptr(),
+  //         func_name,
+  //         torch_api_function,
+  //         module_name,
+  //         TorchFunctionName::TorchDispatch));
 }
 
 // NOTE [dispatch_fn's type argument]
@@ -2282,6 +2316,7 @@ c10::Device concrete_device_fn(
   pybind11::gil_scoped_acquire gil;
   at::impl::MaybeSetTLSOnEntryGuard guard;
 
+  std::cout << "device step 1\n";
   auto out = torchDispatchFromTensorImpl(
       self,
       "device",
@@ -2292,6 +2327,7 @@ c10::Device concrete_device_fn(
           .attr("default")
           .ptr(),
       "torch.ops.prim");
+  std::cout << "device step 2\n";
 
   return toDevice(out.ptr());
 }
@@ -2373,6 +2409,28 @@ c10::IntArrayRef concrete_sizes_fn(
   int64_t len = result[1];
 
   return c10::IntArrayRef(start, len);
+}
+
+c10::Layout concrete_layout_fn(
+    const c10::impl::PyInterpreter*,
+    const c10::TensorImpl* self) {
+  pybind11::gil_scoped_acquire gil;
+  at::impl::MaybeSetTLSOnEntryGuard guard;
+
+  std::cout << "concrete layout step 1\n";
+  auto out = torchDispatchFromTensorImpl(
+      self,
+      "layout",
+      py::module::import("torch")
+          .attr("ops")
+          .attr("prim")
+          .attr("layout")
+          .attr("default")
+          .ptr(),
+      "torch.ops.prim");
+  std::cout << "concrete layout step 2\n";
+
+  return toLayout(out.ptr());
 }
 
 } // anonymous namespace

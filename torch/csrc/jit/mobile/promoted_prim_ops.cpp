@@ -1,5 +1,6 @@
 #include <ATen/ScalarOps.h>
 #include <torch/csrc/jit/mobile/promoted_prim_ops.h>
+#include <iostream>
 namespace torch {
 namespace jit {
 
@@ -59,6 +60,7 @@ void size(Stack& stack) {
 }
 
 void device(Stack& stack) {
+  std::cout << "prim device\n";
   push(stack, pop(stack).toTensor().device());
 }
 
@@ -68,7 +70,13 @@ void dtype(Stack& stack) {
   push(stack, static_cast<int64_t>(a.scalar_type()));
 }
 
+void layout(Stack& stack) {
+  std::cout << "prim layout\n";
+  push(stack, static_cast<c10::Layout>(pop(stack).toTensor().layout()));
+}
+
 void toPrimDType(Stack& stack) {
+  std::cout << "in toPrimDtype\n";
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   bool non_blocking;
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
@@ -191,7 +199,7 @@ void dictIndex(Stack& stack) {
   push(stack, value->value());
 }
 
-static const C10_UNUSED std::array<mobile::prim_op_fn_register, 15> op_reg = {
+static const C10_UNUSED std::array<mobile::prim_op_fn_register, 16> op_reg = {
     mobile::prim_op_fn_register("prim::TupleIndex", tupleIndex),
     mobile::prim_op_fn_register("aten::Bool.Tensor", boolTensor),
     mobile::prim_op_fn_register("aten::format", aten_format),
@@ -201,6 +209,7 @@ static const C10_UNUSED std::array<mobile::prim_op_fn_register, 15> op_reg = {
         raiseExceptionWithMessage),
     mobile::prim_op_fn_register("prim::device", device),
     mobile::prim_op_fn_register("prim::dtype", dtype),
+    mobile::prim_op_fn_register("prim::layout", layout),
     mobile::prim_op_fn_register("aten::__not__", _not),
     mobile::prim_op_fn_register("aten::__is__", is),
     mobile::prim_op_fn_register("aten::__isnot__", isNot),
